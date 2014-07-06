@@ -1,0 +1,29 @@
+{
+  "name": "smooth-operator-navy",
+  "author": {
+    "name": "Ken OKABE"
+  },
+  "theme": "syntax",
+  "version": "1.0.0",
+  "description": "ATOM editor smooth-operator-navy theme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kenokabe/smooth-operator-navy"
+  },
+  "license": "MIT",
+  "engines": {
+    "atom": ">0.50.0"
+  },
+  "readme": "# smooth-operator-navy theme\n[ATOM editor](https://atom.io) smooth-operator theme\n\n\n##[smooth-operator](https://atom.io/packages/smooth-operator)\n\n![A screenshot of your theme](http://kenokabe.github.io/contents/entries/entry20140130/img/smooth-operator.png)\n\n##[smooth-operator-navy](https://atom.io/packages/smooth-operator-navy)\n\n![A screenshot of your theme](http://kenokabe.github.io/contents/entries/entry20140130/img/smooth-operator-navy.png)\n\n\n##Install\n\n###Terminal\n```apm install smooth-operator```\n\n```apm install smooth-operator-navy```\n\nor\n\n###GUI\n`ATOM > Preferences... > Themes`\n\n![A screenshot of your theme](http://kenokabe.github.io/contents/entries/entry20140130/img/settings.png)\n\n###Finally\nScroll up and select the theme from `Syntax Theme` .\n",
+  "readmeFilename": "README.md",
+  "bugs": {
+    "url": "https://github.com/kenokabe/smooth-operator-navy/issues"
+  },
+  "homepage": "https://github.com/kenokabe/smooth-operator-navy",
+  "_id": "smooth-operator-navy@1.0.0",
+  "dist": {
+    "shasum": "17aa532bac6493a0223feac30a9d225889b10572"
+  },
+  "_resolved": "/var/folders/vx/pzsc12rd5r7grfzyn35m2_500000gn/T/d-114518-48955-4bxfiy/package.tgz",
+  "_from": "/var/folders/vx/pzsc12rd5r7grfzyn35m2_500000gn/T/d-114518-48955-4bxfiy/package.tgz"
+}
