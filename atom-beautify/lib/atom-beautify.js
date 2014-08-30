@@ -2,190 +2,309 @@
 
 'use strict';
 
-var beautifyJS = require('js-beautify');
-var beautifyHTML = require('js-beautify').html;
-var beautifyCSS = require('js-beautify').css;
+var plugin = module.exports;
+// Dependencies
 var fs = require('fs');
 var path = require('path');
-var cc = require('config-chain');
-var nopt = require('nopt');
-var extend = require('extend');
+// var nopt = require('nopt');
+var _ = require('lodash');
+var strip = require('strip-json-comments');
+var yaml = require('js-yaml');
+// Language options
+var beautifier = require('./language-options');
+var languages = beautifier.languages;
+var defaultLanguageOptions = beautifier.defaultLanguageOptions;
 
 // TODO: Copied from jsbeautify, please update it from time to time
 var knownOpts = {
-    // Beautifier
-    'indent_size': Number,
-    'indent_char': String,
-    'indent_level': Number,
-    'indent_with_tabs': Boolean,
-    'preserve_newlines': Boolean,
-    'max_preserve_newlines': Number,
-    'space_in_paren': Boolean,
-    'jslint_happy': Boolean,
-    // TODO: expand-strict is obsolete, now identical to expand.  Remove in future version
-    'brace_style': ['collapse', 'expand', 'end-expand', 'expand-strict'],
-    'break_chained_methods': Boolean,
-    'keep_array_indentation': Boolean,
-    'unescape_strings': Boolean,
-    'wrap_line_length': Number,
-    'e4x': Boolean,
-    // HTML-only
-    'max_char': Number, // obsolete since 1.3.5
-    'unformatted': [String, Array],
-    'indent_inner_html': [Boolean],
-    'indent_scripts': ['keep', 'separate', 'normal'],
-    // CLI
-    'version': Boolean,
-    'help': Boolean,
-    'files': [path, Array],
-    'outfile': path,
-    'replace': Boolean,
-    'quiet': Boolean,
-    'type': ['js', 'css', 'html'],
-    'config': path
+  // Beautifier
+  'indent_size': Number,
+  'indent_char': String,
+  'indent_level': Number,
+  'indent_with_tabs': Boolean,
+  'indent_handlebars': Boolean,
+  'preserve_newlines': Boolean,
+  'max_preserve_newlines': Number,
+  'space_in_paren': Boolean,
+  'jslint_happy': Boolean,
+  // TODO: expand-strict is obsolete, now identical to expand.  Remove in future version
+  'brace_style': ['collapse', 'expand', 'end-expand', 'expand-strict'],
+  'break_chained_methods': Boolean,
+  'keep_array_indentation': Boolean,
+  'unescape_strings': Boolean,
+  'wrap_line_length': Number,
+  'e4x': Boolean,
+  // HTML-only
+  'max_char': Number, // obsolete since 1.3.5
+  'unformatted': [String, Array],
+  'indent_inner_html': [Boolean],
+  'indent_scripts': ['keep', 'separate', 'normal'],
+  // CLI
+  'version': Boolean,
+  'help': Boolean,
+  'files': [path, Array],
+  'outfile': path,
+  'replace': Boolean,
+  'quiet': Boolean,
+  'type': ['js', 'css', 'html'],
+  'config': path
 };
 
 var Subscriber = require('emissary').Subscriber;
-var plugin = module.exports;
 Subscriber.extend(plugin);
 
-function verifyExists(fullPath)
-{
-    return fs.existsSync(fullPath) ? fullPath : null;
+function getUserHome() {
+  return process.env.HOME || process.env.HOMEPATH || process.env.USERPROFILE;
 }
 
-function findRecursive(dir, fileName)
-{
-    var fullPath = path.join(dir, fileName);
-    var nextDir = path.dirname(dir);
-    var result = verifyExists(fullPath);
+// function cleanOptions(data, types) {
+//   nopt.clean(data, types);
+//   return data;
+// }
 
-    if (!result && (nextDir !== dir))
-    {
-        result = findRecursive(nextDir, fileName);
-    }
-
-    return result;
+function getCursors(editor) {
+  var cursors = editor.getCursors();
+  var posArray = [];
+  for (var idx = 0; idx < cursors.length; idx++) {
+    var cursor = cursors[idx];
+    var bufferPosition = cursor.getBufferPosition();
+    posArray.push([bufferPosition.row, bufferPosition.column]);
+  }
+  return posArray;
 }
 
-function getUserHome()
-{
-    return process.env.HOME || process.env.USERPROFILE;
+function setCursors(editor, posArray) {
+  for (var idx = 0; idx < posArray.length; idx++) {
+    var bufferPosition = posArray[idx];
+    if (idx === 0) {
+      editor.setCursorBufferPosition(bufferPosition);
+      continue;
+    }
+    editor.addCursorAtBufferPosition(bufferPosition);
+  }
 }
 
-function cleanOptions(data, types)
-{
-    nopt.clean(data, types);
-    return data;
+function verifyExists(fullPath) {
+  return fs.existsSync(fullPath) ? fullPath : null;
 }
 
-function beautify()
-{
-    var text;
-    var editor = atom.workspace.getActiveEditor();
-    var isSelection = !! editor.getSelectedText();
-    var softTabs = editor.softTabs;
-    var tabLength = editor.getTabLength();
+// Storage for memoized results from find file
+// Should prevent lots of directory traversal &
+// lookups when liniting an entire project
+var findFileResults = {};
 
-    var beautifyOptions = {
-        'indent_size': 2,
-        'indent_char': ' ',
-        'indent_level': 0,
-        'indent_with_tabs': false,
-        'preserve_newlines': true,
-        'max_preserve_newlines': 10,
-        'jslint_happy': false,
-        'brace_style': 'expand',
-        'keep_array_indentation': false,
-        'keep_function_indentation': false,
-        'space_before_conditional': true,
-        'break_chained_methods': false,
-        'eval_code': false,
-        'unescape_strings': false,
-        'wrap_line_length': 0
-    };
+/**
+ * Searches for a file with a specified name starting with
+ * 'dir' and going all the way up either until it finds the file
+ * or hits the root.
+ *
+ * @param {string} name filename to search for (e.g. .jshintrc)
+ * @param {string} dir  directory to start search from (default:
+ *                      current working directory)
+ *
+ * @returns {string} normalized filename
+ */
+function findFile(name, dir) {
+  dir = dir || process.cwd();
 
-    // Look for .jsbeautifierrc in file and home path, check env variables
-    var editedFilePath = editor.getPath();
-    var cfg = cc(
-        cleanOptions(cc.env('jsbeautify_'), knownOpts),
-        editedFilePath ? findRecursive(path.dirname(editedFilePath),
-            '.jsbeautifyrc') : null,
-        verifyExists(path.join(getUserHome() || '', '.jsbeautifyrc'))
-    ).list;
-    // cc(...).snapshot SHOULD contain the same what I construct below,
-    // however I have not the faintest idea why it doesn't work here.
-    // It works at js-beautify cli, but not here. Weird.
-    var collectedConfig = {};
-    for (var idx = cfg.length - 1; idx >= 0; idx--)
-    {
-        collectedConfig = extend(cfg[idx], collectedConfig);
-    }
-    // Override the indenting options from the editor
-    beautifyOptions = extend(collectedConfig, beautifyOptions);
+  var filename = path.normalize(path.join(dir, name));
+  if (findFileResults[filename] !== undefined) {
+    return findFileResults[filename];
+  }
 
-    if (isSelection)
-    {
-        text = editor.getSelectedText();
-    }
-    else
-    {
-        text = editor.getText();
-    }
+  var parent = path.resolve(dir, '../');
 
-    switch (editor.getGrammar().name)
-    {
-        case 'JavaScript':
-            text = beautifyJS(text, beautifyOptions);
-            break;
-        case 'HTML':
-        case 'XML':
-            text = beautifyHTML(text, beautifyOptions);
-            break;
-        case 'CSS':
-            text = beautifyCSS(text, beautifyOptions);
-            break;
-        default:
-            return;
-    }
+  if (verifyExists(filename)) {
+    findFileResults[filename] = filename;
+    return filename;
+  }
 
-    if (isSelection)
-    {
-        editor.setTextInBufferRange(
-            editor.getSelectedBufferRange(),
-            text
-        );
-    }
-    else
-    {
-        editor.setText(text);
-    }
+  if (dir === parent) {
+    findFileResults[filename] = null;
+    return null;
+  }
+
+  return findFile(name, parent);
 }
 
-function handleSafeEvent()
-{
-    atom.workspace.eachEditor(function(editor)
-    {
-        var buffer = editor.getBuffer();
-        plugin.unsubscribe(buffer);
+/**
+ * Tries to find a configuration file in either project directory
+ * or in the home directory. Configuration files are named
+ * '.jsbeautifyrc'.
+ *
+ * @param {string} config   name of the configuration file
+ * @param {string} file     path to the file to be linted
+ * @returns {string} a path to the config file
+ */
+function findConfig(config, file) {
+  var dir = path.dirname(path.resolve(file));
+  var envs = getUserHome();
+  var home = path.normalize(path.join(envs, config));
 
-        if (atom.config.get('atom-beautify.beautifyOnSave'))
-        {
-            var events = 'will-be-saved';
-            plugin.subscribe(buffer, events, beautify);
+  var proj = findFile(config, dir);
+  if (proj) {
+    return proj;
+  }
+
+  if (verifyExists(home)) {
+    return home;
+  }
+
+  return null;
+}
+
+function getConfigOptionsFromSettings(langs) {
+  var config = atom.config.getSettings()['atom-beautify'];
+  var options = {};
+  // console.log(langs, config);
+
+  // Iterate over keys of the settings
+  _.every(_.keys(config), function (k) {
+    // Check if keys start with a language
+    var p = k.split('_')[0];
+    var idx = _.indexOf(langs, p);
+    // console.log(k, p, idx);
+    if (idx >= 0) {
+      // Remove the language prefix and nest in options
+      var lang = langs[idx];
+      var opt = k.replace(new RegExp('^' + lang + '_'), '');
+      options[lang] = options[lang] || {};
+      options[lang][opt] = config[k];
+      // console.log(lang, opt);
+    }
+    return true;
+  });
+  // console.log(options);
+  return options;
+}
+
+function beautify() {
+  var text;
+  var editor = atom.workspace.getActiveEditor();
+  var isSelection = !!editor.getSelectedText();
+
+  var softTabs = editor.softTabs;
+  var tabLength = editor.getTabLength();
+  var editorOptions = {
+    'indent_size': softTabs ? tabLength : 1,
+    'indent_char': softTabs ? ' ' : '\t',
+    'indent_with_tabs': !softTabs
+  };
+  var configOptions = getConfigOptionsFromSettings(languages);
+
+  // Look for .jsbeautifierrc in file and home path, check env variables
+  var editedFilePath = editor.getPath();
+
+  function getConfig(startPath) {
+    // Verify that startPath is a string
+    startPath = (typeof startPath === 'string') ? startPath : '';
+
+    if (!startPath) {
+      return {};
+    }
+
+    // Get the path to the config file
+    var configPath = findConfig('.jsbeautifyrc', startPath);
+
+    var externalOptions;
+    if (configPath) {
+      var contents = fs.readFileSync(configPath, {
+        encoding: 'utf8'
+      });
+      if (!contents) {
+        externalOptions = {};
+      } else {
+        try {
+          externalOptions = JSON.parse(strip(contents));
+        } catch (e) {
+          console.log('Failed parsing config as JSON: ' + configPath);
+
+          // Attempt as YAML
+          try {
+            externalOptions = yaml.safeLoad(contents);
+          } catch (e) {
+            console.log('Failed parsing config as YAML: ' + configPath);
+            externalOptions = {};
+          }
+
         }
-    });
+      }
+    } else {
+      externalOptions = {};
+    }
+    return externalOptions;
+  }
+
+  // Get the path to the config file
+  var projectOptions = getConfig(editedFilePath);
+  var homeOptions = getConfig(getUserHome());
+
+  if (isSelection) {
+    text = editor.getSelectedText();
+  } else {
+    text = editor.getText();
+  }
+  var oldText = text;
+
+  // All of the options
+  // Listed in order from default (base) to the one with the highest priority
+  // Left = Default, Right = Will override the left.
+  var allOptions = [
+    editorOptions, // Atom Editor
+    configOptions, //
+    homeOptions, // User's Home path
+    projectOptions // Project path
+  ];
+
+  // Asynchronously and callback-style
+  function beautifyCompleted(text) {
+    if (oldText !== text) {
+      var posArray = getCursors(editor);
+      var origScrollTop = editor.getScrollTop();
+      if (isSelection) {
+        editor.setTextInBufferRange(
+          editor.getSelectedBufferRange(),
+          text
+        );
+      } else {
+        editor.setText(text);
+      }
+      setCursors(editor, posArray);
+      // Let the scrollTop setting run after all the save related stuff is run,
+      // otherwise setScrollTop is not working, probably because the cursor
+      // addition happens asynchronously
+      setTimeout(function () {
+        editor.setScrollTop(origScrollTop);
+      }, 0);
+    }
+  }
+
+  // Finally, beautify!
+  beautifier.beautify(text, editor.getGrammar().name, allOptions, beautifyCompleted);
+
 }
 
-plugin.configDefaults = {
-    beautifyOnSave: false
-};
+function handleSaveEvent() {
+  atom.workspace.eachEditor(function (editor) {
+    var buffer = editor.getBuffer();
+    plugin.unsubscribe(buffer);
 
-plugin.activate = function()
-{
-    handleSafeEvent();
-    plugin.subscribe(atom.config.observe(
-        'atom-beautify.beautifyOnSave',
-        handleSafeEvent));
-    return atom.workspaceView.command('beautify', beautify);
+    if (atom.config.get('atom-beautify.beautifyOnSave')) {
+      var events = 'will-be-saved';
+      plugin.subscribe(buffer, events, beautify);
+    }
+  });
+}
+
+plugin.configDefaults = _.merge({
+  analytics: true,
+  beautifyOnSave: false
+}, defaultLanguageOptions);
+
+plugin.activate = function () {
+  handleSaveEvent();
+  plugin.subscribe(atom.config.observe(
+    'atom-beautify.beautifyOnSave',
+    handleSaveEvent));
+  return atom.workspaceView.command('beautify', beautify);
 };
